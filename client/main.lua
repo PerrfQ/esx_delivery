@@ -39,7 +39,7 @@ CreateThread(function()
                 SetBlipColour(companyBlip, 2)
                 SetBlipAsShortRange(companyBlip, true)
                 BeginTextCommandSetBlipName('STRING')
-                AddTextComponentSubstringPlayerName("Walker Logistics")
+                AddTextComponentSubstringPlayerName(TranslateCap('company_name'))
                 EndTextCommandSetBlipName(companyBlip)
                 DebugPrint("[esx_delivery] Dodano blip firmy logistycznej")
             end
@@ -49,7 +49,7 @@ CreateThread(function()
                 SetBlipColour(returnBlip, 2)
                 SetBlipAsShortRange(returnBlip, true)
                 BeginTextCommandSetBlipName('STRING')
-                AddTextComponentSubstringPlayerName("Oddaj auto")
+                AddTextComponentSubstringPlayerName(TranslateCap('return_vehicle'))
                 EndTextCommandSetBlipName(returnBlip)
                 DebugPrint("[esx_delivery] Dodano blip punktu zwrotu")
             elseif not hasVehicle and returnBlip then
@@ -82,7 +82,7 @@ function UpdateWarehouseBlips()
     if ESX.PlayerData.job and ESX.PlayerData.job.name == Config.DeliveryJob then
         if not warehouseBlips then
             warehouseBlips = {}
-            AddTextEntry("BLIP_CAT_12", "Hurtownia") -- Niestandardowa kategoria
+            AddTextEntry("BLIP_CAT_12", TranslateCap('warehouse_category')) -- Niestandardowa kategoria
             for i, warehouse in ipairs(Config.Warehouses) do
                 local blip = AddBlipForCoord(warehouse.coords.x, warehouse.coords.y, warehouse.coords.z)
                 SetBlipSprite(blip, 473)
@@ -167,62 +167,6 @@ end, false)
 
 
 
-CreateThread(function()
-    local returnBlip = nil
-    local companyBlip = nil
-    local hasVehicle = false
-
-    -- Inicjalne sprawdzenie pojazdu
-    if ESX.PlayerData.job and ESX.PlayerData.job.name == Config.DeliveryJob then
-        ESX.TriggerServerCallback('esx_delivery:hasActiveVehicle', function(active)
-            hasVehicle = active
-            DebugPrint(string.format("[esx_delivery] Inicjalny stan pojazdu: %s", tostring(hasVehicle)))
-        end)
-    end
-
-    while true do
-        local sleep = 1000
-        if ESX.PlayerData.job and ESX.PlayerData.job.name == Config.DeliveryJob then
-            sleep = 0
-            HandleLaptopMarker()
-            HandleReturnPoint()
-            if not companyBlip then
-                companyBlip = AddBlipForCoord(Config.LaptopCoords.x, Config.LaptopCoords.y, Config.LaptopCoords.z)
-                SetBlipSprite(companyBlip, 477)
-                SetBlipColour(companyBlip, 2)
-                SetBlipAsShortRange(companyBlip, true)
-                BeginTextCommandSetBlipName('STRING')
-                AddTextComponentSubstringPlayerName("Walker Logistics")
-                EndTextCommandSetBlipName(companyBlip)
-                DebugPrint("[esx_delivery] Dodano blip firmy logistycznej")
-            end
-            if hasVehicle and not returnBlip then
-                returnBlip = AddBlipForCoord(Config.ReturnPoint.x, Config.ReturnPoint.y, Config.ReturnPoint.z)
-                SetBlipSprite(returnBlip, 478)
-                SetBlipColour(returnBlip, 2)
-                SetBlipAsShortRange(returnBlip, true)
-                BeginTextCommandSetBlipName('STRING')
-                AddTextComponentSubstringPlayerName("Oddaj auto")
-                EndTextCommandSetBlipName(returnBlip)
-                DebugPrint("[esx_delivery] Dodano blip punktu zwrotu")
-            elseif not hasVehicle and returnBlip then
-                RemoveBlip(returnBlip)
-                returnBlip = nil
-                DebugPrint("[esx_delivery] Usunięto blip punktu zwrotu")
-            end
-        elseif companyBlip then
-            RemoveBlip(companyBlip)
-            companyBlip = nil
-            if returnBlip then
-                RemoveBlip(returnBlip)
-                returnBlip = nil
-            end
-            hasVehicle = false
-            DebugPrint("[esx_delivery] Usunięto blipy firmy i zwrotu po zmianie pracy")
-        end
-        Wait(sleep)
-    end
-end)
 
 function OpenDeliveryMenu()
     ESX.TriggerServerCallback('esx_delivery:getAvailableOrders', function(data)
@@ -234,13 +178,13 @@ function OpenDeliveryMenu()
         local vehicle = GetVehiclePedIsIn(playerPed, false)
         local isValidVehicle = IsValidDeliveryVehicle(vehicle)
         local elements = {
-            { label = "Zarządzanie zleceniami", value = 'manage_orders' }
+            { label = TranslateCap('manage_orders'), value = 'manage_orders' }
         }
         if isValidVehicle then
-            table.insert(elements, { label = "Hurtownie", value = 'warehouses' })
+            table.insert(elements, { label = TranslateCap('warehouses'), value = 'warehouses' })
         end
         ESX.UI.Menu.Open('default', GetCurrentResourceName(), 'delivery_menu', {
-            title = "Menu dostaw",
+            title = TranslateCap('delivery_menu_title'),
             align = 'right',
             elements = elements
         }, function(data, menu)
@@ -253,18 +197,18 @@ function OpenDeliveryMenu()
                         unselectable = true
                     })
                     table.insert(orderElements, {
-                        label = "Porzuć zlecenie",
+                        label = TranslateCap('abandon_order'),
                         value = 'abandon_order'
                     })
                 else
                     DebugPrint("[esx_delivery] Brak aktywnego zlecenia")
-                    table.insert(orderElements, { label = "Aktywne zlecenie: Brak", unselectable = true })
+                    table.insert(orderElements, { label = TranslateCap('no_active_order_label'), unselectable = true })
                 end
                 table.insert(orderElements, {
-                    label = "Dostępne zlecenia", value = 'available_orders'
+                    label = TranslateCap('available_orders_label'), value = 'available_orders'
                 })
                 table.insert(orderElements, {
-                    label = "Niedostępne zlecenia", value = 'unavailable_orders'
+                    label = TranslateCap('unavailable_orders_label'), value = 'unavailable_orders'
                 })
                 ESX.UI.Menu.Open('default', GetCurrentResourceName(), 'manage_orders', {
                     title = "Zarządzanie zleceniami",
@@ -336,7 +280,7 @@ function OpenDeliveryMenu()
                         ESX.TriggerServerCallback('esx_delivery:getUnavailableOrders', function(unavailableOrders)
                             local unavailableElements = {}
                             if #unavailableOrders == 0 then
-                                table.insert(unavailableElements, { label = "Brak niedostępnych zleceń", value = 'none' })
+                                table.insert(unavailableElements, { label = TranslateCap('no_unavailable_orders'), value = 'none' })
                             else
                                 for _, order in ipairs(unavailableOrders) do
                                     table.insert(unavailableElements, {
@@ -370,7 +314,7 @@ function OpenDeliveryMenu()
                 local catalogElements = {}
                 if warehouseBlip then
                     table.insert(catalogElements, {
-                        label = "Usuń zaznaczoną hurtownię",
+                        label = TranslateCap('remove_warehouse'),
                         value = 'remove_warehouse'
                     })
                 end
@@ -389,7 +333,7 @@ function OpenDeliveryMenu()
                         if warehouseBlip then
                             RemoveBlip(warehouseBlip)
                             warehouseBlip = nil
-                            ESX.ShowNotification("Usunięto blip hurtowni")
+                            ESX.ShowNotification(TranslateCap('warehouse_blip_removed'))
                             DebugPrint("[esx_delivery] Usunięto blip hurtowni z menu")
                         end
                         menu2.close()
@@ -584,6 +528,7 @@ function HandleDelivery()
                             RemoveBlip(shopBlip)
                             shopBlip = nil
                             DebugPrint(string.format("[esx_delivery] Gracz dostarczył towary do sklepu dla zlecenia ID %d", currentOrder and currentOrder.id or "unknown"))
+
                             currentOrder = nil    
                         end
                     end

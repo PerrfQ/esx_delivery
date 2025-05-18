@@ -1,5 +1,5 @@
 Config = {}
-Config.Locale = GetConvar('esx:locale', 'pl')
+Config.Locale = GetConvar('esx:locale', 'en')
 Config.DeliveryJob = 'delivery'
 Config.LaptopCoords = vector3(152.21, -3211.67, 5.88)
 Config.ReturnPoint = vector3(178.20, -3264.82, 5.64)
