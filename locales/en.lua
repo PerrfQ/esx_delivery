@@ -14,6 +14,7 @@ Locales['en'] = {
     not_delivery_job = "You are not a delivery driver!",
     order_unavailable = "Order unavailable!",
     delivery_started = "Started delivery to %s!",
+    no_profit = "No profit from this order",
     already_in_delivery = "You are already on a delivery!",
     press_to_load = "Press ~INPUT_CONTEXT~ to load goods",
     products_loaded = "Loaded goods at %s, invoice: $%s",

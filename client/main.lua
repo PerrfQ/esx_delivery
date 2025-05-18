@@ -13,16 +13,98 @@ local function DebugPrint(...)
 end
 
 CreateThread(function()
+    local returnBlip = nil
+    local companyBlip = nil
+    local hasVehicle = false
+    local warehouseBlips = nil
+
+    -- Inicjalne sprawdzenie pojazdu
+    if ESX.PlayerData.job and ESX.PlayerData.job.name == Config.DeliveryJob then
+        ESX.TriggerServerCallback('esx_delivery:hasActiveVehicle', function(active)
+            hasVehicle = active
+            DebugPrint(string.format("[esx_delivery] Inicjalny stan pojazdu: %s", tostring(hasVehicle)))
+        end)
+    end
+
     while true do
         local sleep = 1000
         if ESX.PlayerData.job and ESX.PlayerData.job.name == Config.DeliveryJob then
             sleep = 0
             HandleLaptopMarker()
             HandleReturnPoint()
+            UpdateWarehouseBlips()
+            if not companyBlip then
+                companyBlip = AddBlipForCoord(Config.LaptopCoords.x, Config.LaptopCoords.y, Config.LaptopCoords.z)
+                SetBlipSprite(companyBlip, 477)
+                SetBlipColour(companyBlip, 2)
+                SetBlipAsShortRange(companyBlip, true)
+                BeginTextCommandSetBlipName('STRING')
+                AddTextComponentSubstringPlayerName("Walker Logistics")
+                EndTextCommandSetBlipName(companyBlip)
+                DebugPrint("[esx_delivery] Dodano blip firmy logistycznej")
+            end
+            if hasVehicle and not returnBlip then
+                returnBlip = AddBlipForCoord(Config.ReturnPoint.x, Config.ReturnPoint.y, Config.ReturnPoint.z)
+                SetBlipSprite(returnBlip, 478)
+                SetBlipColour(returnBlip, 2)
+                SetBlipAsShortRange(returnBlip, true)
+                BeginTextCommandSetBlipName('STRING')
+                AddTextComponentSubstringPlayerName("Oddaj auto")
+                EndTextCommandSetBlipName(returnBlip)
+                DebugPrint("[esx_delivery] Dodano blip punktu zwrotu")
+            elseif not hasVehicle and returnBlip then
+                RemoveBlip(returnBlip)
+                returnBlip = nil
+                DebugPrint("[esx_delivery] Usunięto blip punktu zwrotu")
+            end
+        elseif companyBlip then
+            RemoveBlip(companyBlip)
+            companyBlip = nil
+            if returnBlip then
+                RemoveBlip(returnBlip)
+                returnBlip = nil
+            end
+            if warehouseBlips then
+                for _, blip in ipairs(warehouseBlips) do
+                    RemoveBlip(blip)
+                end
+                warehouseBlips = nil
+            end
+            hasVehicle = false
+            DebugPrint("[esx_delivery] Usunięto blipy firmy, zwrotu i hurtowni po zmianie pracy")
         end
         Wait(sleep)
     end
 end)
+
+-- Funkcja do zarządzania blipami hurtowni
+function UpdateWarehouseBlips()
+    if ESX.PlayerData.job and ESX.PlayerData.job.name == Config.DeliveryJob then
+        if not warehouseBlips then
+            warehouseBlips = {}
+            AddTextEntry("BLIP_CAT_12", "Hurtownia") -- Niestandardowa kategoria
+            for i, warehouse in ipairs(Config.Warehouses) do
+                local blip = AddBlipForCoord(warehouse.coords.x, warehouse.coords.y, warehouse.coords.z)
+                SetBlipSprite(blip, 473)
+                SetBlipColour(blip, 2)
+                SetBlipAsShortRange(blip, true)
+                SetBlipCategory(blip, 12) -- Grupowanie w kategorii "Hurtownia"
+                BeginTextCommandSetBlipName('STRING')
+                AddTextComponentSubstringPlayerName(warehouse.name) -- Bez prefiksu "Hurtownia:"
+                EndTextCommandSetBlipName(blip)
+                warehouseBlips[i] = blip
+                DebugPrint(string.format("[esx_delivery] Dodano blip dla hurtowni: %s", warehouse.name))
+            end
+        end
+    elseif warehouseBlips then
+        for _, blip in ipairs(warehouseBlips) do
+            RemoveBlip(blip)
+        end
+        warehouseBlips = nil
+        DebugPrint("[esx_delivery] Usunięto blipy hurtowni po zmianie pracy")
+    end
+end
+
 
 local function IsValidDeliveryVehicle(vehicle)
     if not vehicle or GetEntityModel(vehicle) ~= GetHashKey(Config.TruckModel) then
@@ -72,10 +154,14 @@ end
 
 RegisterKeyMapping('deliverymenu', TranslateCap('delivery_menu'), 'keyboard', 'F6')
 RegisterCommand('deliverymenu', function()
+    local playerPed = PlayerPedId()
+    local vehicle = GetVehiclePedIsIn(playerPed, false)
     if ESX.PlayerData.job.name ~= Config.DeliveryJob then
         ESX.ShowNotification(TranslateCap('not_delivery_job'))
         return
     end
+    local retval, trailer = GetVehicleTrailerVehicle(vehicle)
+    DebugPrint(string.format("[esx_delivery] Trailer check for menu: retval=%s, trailer=%d, model=%d, expected=%d", tostring(retval), trailer, GetEntityModel(trailer), GetHashKey(Config.TrailerModel)))
     OpenDeliveryMenu()
 end, false)
 
@@ -138,9 +224,12 @@ CreateThread(function()
     end
 end)
 
-
 function OpenDeliveryMenu()
     ESX.TriggerServerCallback('esx_delivery:getAvailableOrders', function(data)
+        DebugPrint(string.format("[esx_delivery] Otrzymano dane z getAvailableOrders: %s", json.encode(data)))
+        local savedOrders = data.orders or {}
+        local savedActiveOrder = data.activeOrder
+        DebugPrint(string.format("[esx_delivery] Zapisano orders: %s, activeOrder: %s", json.encode(savedOrders), json.encode(savedActiveOrder)))
         local playerPed = PlayerPedId()
         local vehicle = GetVehiclePedIsIn(playerPed, false)
         local isValidVehicle = IsValidDeliveryVehicle(vehicle)
@@ -156,15 +245,19 @@ function OpenDeliveryMenu()
             elements = elements
         }, function(data, menu)
             if data.current.value == 'manage_orders' then
-                local orderElements = {
-                    { label = "Zarządzanie zleceniami", unselectable = true }
-                }
-                if data.activeOrder then
+                local orderElements = {}
+                if savedActiveOrder ~= nil then
+                    DebugPrint(string.format("[esx_delivery] Wyświetlam aktywne zlecenie: id=%d, shopName=%s", savedActiveOrder.id, savedActiveOrder.shopName))
                     table.insert(orderElements, {
-                        label = string.format("Aktywne zlecenie: %s (%d jednostek, $%s)", data.activeOrder.shopName, data.activeOrder.units, ESX.Math.GroupDigits(data.activeOrder.price)),
+                        label = string.format("Aktywne zlecenie: %s (%d jednostek, $%s)", savedActiveOrder.shopName, savedActiveOrder.units, ESX.Math.GroupDigits(savedActiveOrder.price)),
                         unselectable = true
                     })
+                    table.insert(orderElements, {
+                        label = "Porzuć zlecenie",
+                        value = 'abandon_order'
+                    })
                 else
+                    DebugPrint("[esx_delivery] Brak aktywnego zlecenia")
                     table.insert(orderElements, { label = "Aktywne zlecenie: Brak", unselectable = true })
                 end
                 table.insert(orderElements, {
@@ -179,13 +272,14 @@ function OpenDeliveryMenu()
                     elements = orderElements
                 }, function(data2, menu2)
                     if data2.current.value == 'available_orders' then
-                        local availableElements = {
-                            { label = "Dostępne zlecenia", unselectable = true }
-                        }
-                        if #data.orders == 0 then
+                        local availableElements = {}
+                        DebugPrint(string.format("[esx_delivery] Używam zapisanych orders: %s", json.encode(savedOrders)))
+                        if #savedOrders == 0 then
                             table.insert(availableElements, { label = TranslateCap('no_orders'), value = 'none' })
                         else
-                            for _, order in ipairs(data.orders) do
+                            DebugPrint(string.format("[esx_delivery] Wyświetlam %d dostępnych zleceń", #savedOrders))
+                            for i, order in ipairs(savedOrders) do
+                                DebugPrint(string.format("[esx_delivery] Zlecenie %d: id=%d, shopName=%s, product=%s, units=%d, price=%d", i, order.id, order.shopName, order.product, order.units, order.price))
                                 table.insert(availableElements, {
                                     label = TranslateCap('order_entry', order.shopName, order.product, order.units, ESX.Math.GroupDigits(order.price)),
                                     value = order.id
@@ -198,8 +292,12 @@ function OpenDeliveryMenu()
                             elements = availableElements
                         }, function(data3, menu3)
                             if type(data3.current.value) == 'number' then
+                                if not isValidVehicle then
+                                    ESX.ShowNotification(TranslateCap('no_delivery_vehicle'))
+                                    return
+                                end
                                 local orderIndex = nil
-                                for i, order in ipairs(data.orders) do
+                                for i, order in ipairs(savedOrders) do
                                     if order.id == data3.current.value then
                                         orderIndex = i
                                         break
@@ -209,12 +307,11 @@ function OpenDeliveryMenu()
                                     ESX.ShowNotification(TranslateCap('order_unavailable'))
                                     return
                                 end
-                                local warehouseElements = {
-                                    { label = TranslateCap('select_warehouse'), unselectable = true }
-                                }
+                                local warehouseElements = {}
                                 for i, warehouse in ipairs(Config.Warehouses) do
+                                    local cost = math.floor((savedOrders[orderIndex].wholesalePrice or Config.DefaultWholesalePrice) * warehouse.priceMultiplier * savedOrders[orderIndex].units)
                                     table.insert(warehouseElements, {
-                                        label = TranslateCap('warehouse_entry', warehouse.name, ESX.Math.GroupDigits(math.floor(data.orders[orderIndex].price * warehouse.priceMultiplier))),
+                                        label = string.format("%s ($%s)", warehouse.name, ESX.Math.GroupDigits(cost)),
                                         value = i
                                     })
                                 end
@@ -223,7 +320,7 @@ function OpenDeliveryMenu()
                                     align = 'right',
                                     elements = warehouseElements
                                 }, function(data4, menu4)
-                                    TriggerServerEvent('esx_delivery:selectWarehouse', data3.current.value, data4.current.value)
+                                    TriggerServerEvent('esx_delivery:selectWarehouse', data3.current.value, data4.current.value, isValidVehicle)
                                     menu4.close()
                                     menu3.close()
                                     menu2.close()
@@ -237,9 +334,7 @@ function OpenDeliveryMenu()
                         end)
                     elseif data2.current.value == 'unavailable_orders' then
                         ESX.TriggerServerCallback('esx_delivery:getUnavailableOrders', function(unavailableOrders)
-                            local unavailableElements = {
-                                { label = "Niedostępne zlecenia", unselectable = true }
-                            }
+                            local unavailableElements = {}
                             if #unavailableOrders == 0 then
                                 table.insert(unavailableElements, { label = "Brak niedostępnych zleceń", value = 'none' })
                             else
@@ -260,14 +355,19 @@ function OpenDeliveryMenu()
                                 menu3.close()
                             end)
                         end)
+                    elseif data2.current.value == 'abandon_order' then
+                        if savedActiveOrder ~= nil then
+                            TriggerServerEvent('esx_delivery:abandonOrder', savedActiveOrder.id)
+                            currentOrder = nil
+                            menu2.close()
+                            menu.close()
+                        end
                     end
                 end, function(data2, menu2)
                     menu2.close()
                 end)
             elseif data.current.value == 'warehouses' then
-                local catalogElements = {
-                    { label = TranslateCap('select_warehouse'), unselectable = true }
-                }
+                local catalogElements = {}
                 if warehouseBlip then
                     table.insert(catalogElements, {
                         label = "Usuń zaznaczoną hurtownię",
@@ -276,7 +376,7 @@ function OpenDeliveryMenu()
                 end
                 for i, warehouse in ipairs(Config.Warehouses) do
                     table.insert(catalogElements, {
-                        label = TranslateCap('warehouse_entry', warehouse.name, ESX.Math.GroupDigits(0)),
+                        label = string.format("%s ($%s/1 zasób)", warehouse.name, ESX.Math.GroupDigits(Config.DefaultWholesalePrice * warehouse.priceMultiplier)),
                         value = i
                     })
                 end
@@ -306,6 +406,8 @@ function OpenDeliveryMenu()
         end)
     end)
 end
+
+
 
 RegisterNetEvent('esx_delivery:spawnVehicle')
 AddEventHandler('esx_delivery:spawnVehicle', function(plate)
@@ -406,38 +508,29 @@ AddEventHandler('esx_delivery:setWarehouseRoute', function(warehouse)
     DebugPrint(string.format("[esx_delivery] Ustawiono waypoint do hurtowni: %s (%s)", warehouse.name, tostring(warehouse.coords)))
 end)
 
+
 function HandleDelivery()
     CreateThread(function()
-        local trailerEntity = nil
         while currentOrder do
             local playerPed = PlayerPedId()
             local coords = GetEntityCoords(playerPed)
-            local vehicle = GetVehiclePedIsIn(playerPed, false)
-            if vehicle and GetEntityModel(vehicle) == GetHashKey(Config.TruckModel) then
-                local trailer = GetVehicleTrailerVehicle(vehicle)
-                if trailer and GetEntityModel(trailer) == GetHashKey(Config.TrailerModel) then
-                    if trailerBlip then
+            if trailerBlip then
+                local vehicle = GetVehiclePedIsIn(playerPed, false)
+                if vehicle and GetEntityModel(vehicle) == GetHashKey(Config.TruckModel) then
+                    local retval, trailer = GetVehicleTrailerVehicle(vehicle)
+                    DebugPrint(string.format("[esx_delivery] Trailer check for blip: retval=%s, trailer=%d, model=%d, expected=%d", tostring(retval), trailer, GetEntityModel(trailer), GetHashKey(Config.TrailerModel)))
+                    if retval and GetEntityModel(trailer) == GetHashKey(Config.TrailerModel) then
                         RemoveBlip(trailerBlip)
                         trailerBlip = nil
                         DebugPrint("[esx_delivery] Blip naczepy usunięty po podłączeniu")
                     end
-                    trailerEntity = trailer
-                elseif trailerEntity and not trailerBlip then
-                    trailerBlip = AddBlipForEntity(trailerEntity)
-                    SetBlipSprite(trailerBlip, 479)
-                    SetBlipColour(trailerBlip, 2)
-                    SetBlipAsShortRange(trailerBlip, true)
-                    BeginTextCommandSetBlipName('STRING')
-                    AddTextComponentSubstringPlayerName(TranslateCap('delivery_trailer'))
-                    EndTextCommandSetBlipName(trailerBlip)
-                    DebugPrint("[esx_delivery] Blip naczepy przywrócony po odłączeniu")
                 end
             end
             if not currentOrder.loaded then
                 local warehouseDistance = #(coords - currentOrder.warehouseCoords)
-                if warehouseDistance < 10.0 then
-                    DrawMarker(29, currentOrder.warehouseCoords.x, currentOrder.warehouseCoords.y, currentOrder.warehouseCoords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 50, 200, 50, 100, false, true, 2, nil, nil, false)
-                    if warehouseDistance < 2.0 then
+                if warehouseDistance < 100.0 then
+                    DrawMarker(1, currentOrder.warehouseCoords.x, currentOrder.warehouseCoords.y, currentOrder.warehouseCoords.z - 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.0, 5.0, 2.0, 50, 200, 50, 100, false, true, 2, nil, nil, false)
+                    if warehouseDistance < 5.0 then
                         ESX.ShowHelpNotification(TranslateCap('press_to_load'))
                         if IsControlJustReleased(0, 38) then
                             local vehicle = GetVehiclePedIsIn(playerPed, false)
@@ -445,9 +538,11 @@ function HandleDelivery()
                                 ESX.ShowNotification(TranslateCap('no_delivery_vehicle'))
                                 return
                             end
-                            local trailer = GetVehicleTrailerVehicle(vehicle)
-                            if not trailer or GetEntityModel(trailer) ~= GetHashKey(Config.TrailerModel) then
+                            local retval, trailer = GetVehicleTrailerVehicle(vehicle)
+                            DebugPrint(string.format("[esx_delivery] Trailer check at warehouse: retval=%s, trailer=%d, model=%d, expected=%d", tostring(retval), trailer, GetEntityModel(trailer), GetHashKey(Config.TrailerModel)))
+                            if not retval or GetEntityModel(trailer) ~= GetHashKey(Config.TrailerModel) then
                                 ESX.ShowNotification(TranslateCap('no_trailer'))
+                                currentOrder.loaded = false
                                 return
                             end
                             currentOrder.loaded = true
@@ -460,15 +555,18 @@ function HandleDelivery()
                             BeginTextCommandSetBlipName('STRING')
                             AddTextComponentSubstringPlayerName(TranslateCap('shop', currentOrder.shopName))
                             EndTextCommandSetBlipName(shopBlip)
+                            SetNewWaypoint(currentOrder.coords.x, currentOrder.coords.y)
                             ESX.ShowNotification(TranslateCap('products_loaded', currentOrder.warehouseName, ESX.Math.GroupDigits(currentOrder.invoiceCost)))
+                            DebugPrint(string.format("[esx_delivery] Gracz załadował towary w hurtowni: %s dla zlecenia ID %d", currentOrder.warehouseName, currentOrder.id))
                         end
                     end
                 end
             elseif currentOrder.loaded then
                 local shopDistance = #(coords - currentOrder.coords)
-                if shopDistance < 10.0 then
+                print(shopDistance)
+                if shopDistance < 200.0 then
                     DrawMarker(29, currentOrder.coords.x, currentOrder.coords.y, currentOrder.coords.z, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 50, 200, 50, 100, false, true, 2, nil, nil, false)
-                    if shopDistance < 2.0 then
+                    if shopDistance < 30.0 then
                         ESX.ShowHelpNotification(TranslateCap('press_to_deliver'))
                         if IsControlJustReleased(0, 38) then
                             local vehicle = GetVehiclePedIsIn(playerPed, false)
@@ -476,15 +574,17 @@ function HandleDelivery()
                                 ESX.ShowNotification(TranslateCap('no_delivery_vehicle'))
                                 return
                             end
-                            local trailer = GetVehicleTrailerVehicle(vehicle)
-                            if not trailer or GetEntityModel(trailer) ~= GetHashKey(Config.TrailerModel) then
+                            local retval, trailer = GetVehicleTrailerVehicle(vehicle)
+                            DebugPrint(string.format("[esx_delivery] Trailer check at shop: retval=%s, trailer=%d, model=%d, expected=%d", tostring(retval), trailer, GetEntityModel(trailer), GetHashKey(Config.TrailerModel)))
+                            if not retval or GetEntityModel(trailer) ~= GetHashKey(Config.TrailerModel) then
                                 ESX.ShowNotification(TranslateCap('no_trailer'))
                                 return
                             end
                             TriggerServerEvent('esx_delivery:completeOrder', currentOrder.id)
                             RemoveBlip(shopBlip)
                             shopBlip = nil
-                            currentOrder = nil
+                            DebugPrint(string.format("[esx_delivery] Gracz dostarczył towary do sklepu dla zlecenia ID %d", currentOrder and currentOrder.id or "unknown"))
+                            currentOrder = nil    
                         end
                     end
                 end

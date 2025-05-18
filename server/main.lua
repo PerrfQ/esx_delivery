@@ -33,6 +33,7 @@ local function IsValidDeliveryVehicle(source, vehicle)
     return hasJob
 end
 
+
 RegisterServerEvent('esx_delivery:registerOrder')
 AddEventHandler('esx_delivery:registerOrder', function(orderData)
     if not orderData or not orderData.businessId or not orderData.units or not orderData.shopName or not orderData.product then
@@ -50,14 +51,17 @@ AddEventHandler('esx_delivery:registerOrder', function(orderData)
         DebugPrint("[esx_delivery] Błąd: Brak koordynatów dla biznesu ID " .. orderData.businessId)
         return
     end
-    local success = MySQL.insert.await('INSERT INTO delivery_orders (business_id, shop_name, units, wholesale_price, buy_price, product, coords) VALUES (?, ?, ?, ?, ?, ?, ?)', {
+    local success = MySQL.insert.await('INSERT INTO delivery_orders (business_id, shop_name, units, wholesale_price, buy_price, product, coords, taken_by, warehouse_id, invoice_cost) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', {
         orderData.businessId,
         orderData.shopName,
         math.min(orderData.units, Config.MaxUnits),
         orderData.wholesalePrice,
         orderData.buyPrice,
         orderData.product,
-        string.format("%.2f,%.2f,%.2f", coords.x, coords.y, coords.z)
+        string.format("%.2f,%.2f,%.2f", coords.x, coords.y, coords.z),
+        0, -- taken_by
+        0, -- warehouse_id
+        0  -- invoice_cost
     })
     if success then
         DebugPrint(string.format("[esx_delivery] Zarejestrowano zlecenie dla biznesu ID %d, produkt: %s, jednostki: %d", orderData.businessId, orderData.product, orderData.units))
@@ -121,46 +125,105 @@ ESX.RegisterServerCallback('esx_delivery:getAvailableOrders', function(source, c
         cb({ orders = {}, activeOrder = nil, isValidVehicle = false })
         return
     end
+    local success, orders = pcall(function()
+        return MySQL.query.await('SELECT id, business_id, shop_name, units, wholesale_price, buy_price, product, coords, taken_by, warehouse_id, invoice_cost FROM delivery_orders WHERE taken_by = 0 OR taken_by = ?', { source })
+    end)
+    if not success or not orders then
+        DebugPrint(string.format("[esx_delivery] Gracz %d: Błąd SQL lub brak wyników: %s", source, tostring(orders)))
+        cb({ orders = {}, activeOrder = nil, isValidVehicle = false })
+        return
+    end
     local availableOrders = {}
     local activeOrder = nil
-    local orders = MySQL.query.await('SELECT id, business_id, shop_name, units, wholesale_price, buy_price, product, coords, taken_by, warehouse_id, invoice_cost FROM delivery_orders WHERE taken_by IS NULL OR taken_by = ?', { source })
     DebugPrint(string.format("[esx_delivery] Gracz %d: Pobrano %d zleceń z bazy", source, #orders))
     for i, order in ipairs(orders) do
-        DebugPrint(string.format("[esx_delivery] Zlecenie %d: id=%d, shop_name=%s, taken_by=%s", i, order.id, order.shop_name, tostring(order.taken_by)))
+        DebugPrint(string.format("[esx_delivery] Zlecenie %d: id=%d, shop_name=%s, taken_by=%d", i, order.id, order.shop_name, order.taken_by))
         if order.taken_by == source then
-            local warehouse = order.warehouse_id and Config.Warehouses[order.warehouse_id] or nil
+            local warehouse = order.warehouse_id ~= 0 and Config.Warehouses[order.warehouse_id] or nil
             activeOrder = {
                 id = order.id,
                 shopName = order.shop_name,
                 units = order.units,
                 product = order.product,
                 price = order.buy_price,
+                wholesalePrice = order.wholesale_price,
                 warehouse = warehouse,
                 invoiceCost = order.invoice_cost
             }
-        elseif not order.taken_by then
+        elseif order.taken_by == 0 then
             table.insert(availableOrders, {
                 id = order.id,
                 shopName = order.shop_name,
                 units = order.units,
                 product = order.product,
                 price = order.buy_price,
+                wholesalePrice = order.wholesale_price,
                 reward = math.floor(order.units * Config.BaseReward * 0.1)
             })
         end
     end
-    DebugPrint(string.format("[esx_delivery] Gracz %d: Dostępnych zleceń: %d, aktywne zlecenie: %s", source, #availableOrders, activeOrder and tostring(activeOrder.id) or "brak"))
-    cb({ orders = availableOrders, activeOrder = activeOrder, isValidVehicle = false })
+    local response = { orders = availableOrders, activeOrder = activeOrder, isValidVehicle = false }
+    DebugPrint(string.format("[esx_delivery] Gracz %d: Zwracam dane: %s", source, json.encode(response)))
+    cb(response)
 end)
 
-RegisterServerEvent('esx_delivery:selectWarehouse')
-AddEventHandler('esx_delivery:selectWarehouse', function(orderId, warehouseIndex)
+RegisterServerEvent('esx_delivery:abandonOrder')
+AddEventHandler('esx_delivery:abandonOrder', function(orderId)
+    local source = source
     local xPlayer = ESX.GetPlayerFromId(source)
     if not xPlayer or xPlayer.job.name ~= Config.DeliveryJob then
         xPlayer.showNotification(TranslateCap('not_delivery_job'))
         return
     end
-    local order = MySQL.single.await('SELECT * FROM delivery_orders WHERE id = ? AND taken_by IS NULL', { orderId })
+    local order = MySQL.single.await('SELECT * FROM delivery_orders WHERE id = ? AND taken_by = ?', { orderId, source })
+    if not order then
+        xPlayer.showNotification(TranslateCap('invalid_order'))
+        return
+    end
+    local success = MySQL.update.await('UPDATE delivery_orders SET taken_by = 0, warehouse_id = 0, invoice_cost = 0 WHERE id = ?', { orderId })
+    if not success then
+        xPlayer.showNotification(TranslateCap('server_error'))
+        DebugPrint(string.format("[esx_delivery] Błąd SQL przy porzucaniu zlecenia ID %d dla gracza %d", orderId, source))
+        return
+    end
+    xPlayer.showNotification("Zlecenie zostało porzucone")
+    DebugPrint(string.format("[esx_delivery] Gracz %d porzucił zlecenie ID %d", source, orderId))
+end)
+
+ESX.RegisterServerCallback('esx_delivery:getUnavailableOrders', function(source, cb)
+    local xPlayer = ESX.GetPlayerFromId(source)
+    if not xPlayer or xPlayer.job.name ~= Config.DeliveryJob then
+        DebugPrint(string.format("[esx_delivery] Gracz %d nie jest dostawcą", source))
+        cb({})
+        return
+    end
+    local unavailableOrders = {}
+    local orders = MySQL.query.await('SELECT id, business_id, shop_name, units, wholesale_price, buy_price, product, coords, taken_by FROM delivery_orders WHERE taken_by != 0 AND taken_by != ?', { source })
+    for _, order in ipairs(orders) do
+        table.insert(unavailableOrders, {
+            id = order.id,
+            shopName = order.shop_name,
+            units = order.units,
+            product = order.product,
+            price = order.buy_price,
+            takenBy = order.taken_by
+        })
+    end
+    DebugPrint(string.format("[esx_delivery] Gracz %d: Pobrano %d niedostępnych zleceń", source, #unavailableOrders))
+    cb(unavailableOrders)
+end)
+
+
+RegisterServerEvent('esx_delivery:selectWarehouse')
+AddEventHandler('esx_delivery:selectWarehouse', function(orderId, warehouseIndex, vehicleValid)
+    DebugPrint(string.format("[esx_delivery] Gracz %d: vehicleValid=%s", source, tostring(vehicleValid)))
+    local _source = source
+    local xPlayer = ESX.GetPlayerFromId(source)
+    if not xPlayer or xPlayer.job.name ~= Config.DeliveryJob then
+        xPlayer.showNotification(TranslateCap('not_delivery_job'))
+        return
+    end
+    local order = MySQL.single.await('SELECT * FROM delivery_orders WHERE id = ? AND taken_by = 0', { orderId })
     if not order then
         xPlayer.showNotification(TranslateCap('order_unavailable'))
         return
@@ -170,17 +233,22 @@ AddEventHandler('esx_delivery:selectWarehouse', function(orderId, warehouseIndex
         xPlayer.showNotification(TranslateCap('invalid_warehouse'))
         return
     end
-    local vehicle = GetVehiclePedIsIn(GetPlayerPed(source), false)
-    if not IsValidDeliveryVehicle(source, vehicle) then
+    if not vehicleValid then
         xPlayer.showNotification(TranslateCap('no_delivery_vehicle'))
         return
     end
     local invoiceCost = math.floor(order.wholesale_price * warehouse.priceMultiplier * order.units)
     local success = MySQL.update.await('UPDATE delivery_orders SET taken_by = ?, warehouse_id = ?, invoice_cost = ? WHERE id = ?', {
-        source, warehouseIndex, invoiceCost, orderId
+        _source, warehouseIndex, invoiceCost, orderId
     })
     if not success then
         xPlayer.showNotification(TranslateCap('server_error'))
+        return
+    end
+    local x, y, z = order.coords:match("([^,]+),([^,]+),([^,]+)")
+    if not (x and y and z) then
+        xPlayer.showNotification("Błędny format koordynatów zlecenia")
+        DebugPrint(string.format("[esx_delivery] Błąd: Nieprawidłowy format coords dla zlecenia ID %d: %s", orderId, tostring(order.coords)))
         return
     end
     local orderData = {
@@ -190,49 +258,64 @@ AddEventHandler('esx_delivery:selectWarehouse', function(orderId, warehouseIndex
         wholesalePrice = order.wholesale_price,
         buyPrice = order.buy_price,
         product = order.product,
-        coords = vector3(table.unpack({order.coords:match("([^,]+),([^,]+),([^,]+)")})),
+        coords = vector3(tonumber(x), tonumber(y), tonumber(z)),
         warehouse = warehouse,
         invoiceCost = invoiceCost
     }
-    TriggerClientEvent('esx_delivery:startDelivery', source, orderId, orderData)
-    DebugPrint(string.format("[esx_delivery] Gracz %d wybrał hurtownię %s dla zlecenia ID %d, koszt faktury: %d", source, warehouse.name, orderId, invoiceCost))
+    TriggerClientEvent('esx_delivery:startDelivery', _source, orderId, orderData)
+    DebugPrint(string.format("[esx_delivery] Gracz %d wybrał hurtownię %s dla zlecenia ID %d, koszt faktury: %d", _source, warehouse.name, orderId, invoiceCost))
 end)
 
 RegisterServerEvent('esx_delivery:completeOrder')
 AddEventHandler('esx_delivery:completeOrder', function(orderId)
-    local xPlayer = ESX.GetPlayerFromId(source)
-    local order = MySQL.single.await('SELECT * FROM delivery_orders WHERE id = ? AND taken_by = ?', { orderId, source })
-    if not xPlayer or not order then
+    local _source = source
+    local xPlayer = ESX.GetPlayerFromId(_source)
+    if not xPlayer then
+        DebugPrint(string.format("[esx_delivery] Błąd: Gracz %d nie istnieje", _source))
+        return
+    end
+    local order = MySQL.single.await('SELECT * FROM delivery_orders WHERE id = ? AND taken_by = ?', { orderId, _source })
+    if not order then
         xPlayer.showNotification(TranslateCap('invalid_order'))
+        DebugPrint(string.format("[esx_delivery] Błąd: Zlecenie ID %d nie istnieje lub nie należy do gracza %d", orderId, _source))
         return
     end
-    local vehicle = GetVehiclePedIsIn(GetPlayerPed(source), false)
-    if not IsValidDeliveryVehicle(source, vehicle) then
-        xPlayer.showNotification(TranslateCap('no_delivery_vehicle'))
+    if not exports.esx_economyreworked:ValidateFrameworkReady(_source, "esx_delivery:completeOrder") then
+        xPlayer.showNotification(TranslateCap('server_error'))
+        DebugPrint(string.format("[esx_delivery] Błąd: Framework esx_economyreworked niegotowy dla zlecenia ID %d, gracz %d", orderId, _source))
         return
     end
-    local trailer = GetVehicleTrailerVehicle(vehicle)
-    if not trailer or GetEntityModel(trailer) ~= GetHashKey(Config.TrailerModel) then
-        xPlayer.showNotification(TranslateCap('no_trailer'))
-        return
-    end
-    local revenue = order.buy_price * order.units
-    local profit = revenue - order.invoice_cost
+    local profit = order.buy_price - order.invoice_cost
     local success = MySQL.transaction.await({
-        { 'UPDATE businesses SET stock = stock + ?, funds = funds - ? WHERE id = ?', { order.units, revenue, order.business_id } },
+        { 'UPDATE businesses SET stock = stock + ?, funds = funds - ? WHERE id = ?', { order.units, order.buy_price, order.business_id } },
         { 'INSERT INTO deliveries (business_id, units, cost, type) VALUES (?, ?, ?, ?)', { order.business_id, order.units, order.invoice_cost, 'standard' } },
         { 'DELETE FROM delivery_orders WHERE id = ?', { orderId } }
     })
     if not success then
         xPlayer.showNotification(TranslateCap('server_error'))
-        DebugPrint(string.format("[esx_delivery] Błąd SQL przy zakończeniu zlecenia ID %d", orderId))
+        DebugPrint(string.format("[esx_delivery] Błąd SQL przy zakończeniu zlecenia ID %d dla gracza %d", orderId, _source))
         return
     end
-    xPlayer.addMoney(profit, 'Delivery profit')
-    xPlayer.showNotification(TranslateCap('delivery_completed', ESX.Math.GroupDigits(profit)))
-    exports.esx_economyreworked:UpdateBusinessCache(order.business_id, { stock = businessCache[order.business_id].stock + order.units, funds = businessCache[order.business_id].funds - revenue })
-    exports.esx_economyreworked:UpdateBusinessDetails(-1, order.business_id)
-    DebugPrint(string.format("[esx_delivery] Zlecenie ID %d zakończone przez gracza %d, zysk: %d", orderId, source, profit))
+    if profit == 0 then
+        xPlayer.showNotification(TranslateCap('no_profit'))
+        DebugPrint(string.format("[esx_delivery] Zlecenie ID %d zakończone przez gracza %d, zysk: 0", orderId, _source))
+    elseif profit < 0 then
+        local loss = math.abs(profit)
+        if xPlayer.getMoney() >= loss then
+            xPlayer.removeMoney(loss, 'Delivery loss')
+            xPlayer.showNotification(TranslateCap('loss', ESX.Math.GroupDigits(loss)))
+            DebugPrint(string.format("[esx_delivery] Zlecenie ID %d zakończone przez gracza %d, strata: %d", orderId, _source, loss))
+        else
+            xPlayer.showNotification(TranslateCap('insufficient_funds'))
+            DebugPrint(string.format("[esx_delivery] Gracz %d nie ma dość pieniędzy na pokrycie straty %d dla zlecenia ID %d", _source, loss, orderId))
+        end
+    else
+        xPlayer.addMoney(profit, 'Delivery profit')
+        xPlayer.showNotification(TranslateCap('delivery_completed', ESX.Math.GroupDigits(profit)))
+        DebugPrint(string.format("[esx_delivery] Zlecenie ID %d zakończone przez gracza %d, zysk: %d", orderId, _source, profit))
+    end
+    exports.esx_economyreworked:UpdateBusinessCache(order.business_id, { stock = order.units, funds = -order.buy_price })
+    TriggerClientEvent('esx_shops:refreshBlips', -1)
 end)
 
 RegisterServerEvent('esx_delivery:returnVehicle')
@@ -279,7 +362,7 @@ AddEventHandler('playerDropped', function(source)
     end
     local hasOrders = MySQL.single.await('SELECT 1 FROM delivery_orders WHERE taken_by = ?', { source })
     if hasOrders then
-        local success = MySQL.update.await('UPDATE delivery_orders SET taken_by = NULL, warehouse_id = NULL, invoice_cost = NULL WHERE taken_by = ?', { source })
+        local success = MySQL.update.await('UPDATE delivery_orders SET taken_by = 0, warehouse_id = 0, invoice_cost = 0 WHERE taken_by = ?', { source })
         if success then
             DebugPrint(string.format("[esx_delivery] Zlecenia gracza %d wróciły na tablicę po rozłączeniu", source))
         end
