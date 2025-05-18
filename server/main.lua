@@ -286,8 +286,9 @@ AddEventHandler('esx_delivery:completeOrder', function(orderId)
         return
     end
     local profit = order.buy_price - order.invoice_cost
+    local reason = string.format("Dostawa %d sztuk", order.units)
     local success = MySQL.transaction.await({
-        { 'UPDATE businesses SET stock = stock + ?, funds = funds - ? WHERE id = ?', { order.units, order.buy_price, order.business_id } },
+        { 'UPDATE businesses SET stock = stock + ? WHERE id = ?', { order.units, order.business_id } },
         { 'INSERT INTO deliveries (business_id, units, cost, type) VALUES (?, ?, ?, ?)', { order.business_id, order.units, order.invoice_cost, 'standard' } },
         { 'DELETE FROM delivery_orders WHERE id = ?', { orderId } }
     })
@@ -295,6 +296,12 @@ AddEventHandler('esx_delivery:completeOrder', function(orderId)
         xPlayer.showNotification(TranslateCap('server_error'))
         DebugPrint(string.format("[esx_delivery] Błąd SQL przy zakończeniu zlecenia ID %d dla gracza %d", orderId, _source))
         return
+    end
+    local invoiceSuccess = exports.esx_economyreworked:IssueInvoice(order.business_id, order.invoice_cost, _source, reason)
+    if not invoiceSuccess then
+        xPlayer.showNotification(TranslateCap('invoice_error'))
+        DebugPrint(string.format("[esx_delivery] Błąd przy wystawianiu faktury dla zlecenia ID %d, biznes ID %d, gracz %d", orderId, order.business_id, _source))
+        -- Kontynuujemy, bo transakcja SQL już się powiodła
     end
     if profit == 0 then
         xPlayer.showNotification(TranslateCap('no_profit'))
@@ -314,7 +321,11 @@ AddEventHandler('esx_delivery:completeOrder', function(orderId)
         xPlayer.showNotification(TranslateCap('delivery_completed', ESX.Math.GroupDigits(profit)))
         DebugPrint(string.format("[esx_delivery] Zlecenie ID %d zakończone przez gracza %d, zysk: %d", orderId, _source, profit))
     end
-    exports.esx_economyreworked:UpdateBusinessCache(order.business_id, { stock = order.units, funds = -order.buy_price })
+    local cacheSuccess = exports.esx_economyreworked:UpdateStockCache()
+    if not cacheSuccess then
+        DebugPrint(string.format("[esx_delivery] Błąd przy synchronizacji businessCache dla zlecenia ID %d, biznes ID %d", orderId, order.business_id))
+    end
+    Citizen.Wait(300)
     TriggerClientEvent('esx_shops:refreshBlips', -1)
 end)
 
