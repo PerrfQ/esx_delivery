@@ -1,5 +1,5 @@
 ESX = exports['es_extended']:getSharedObject()
-local DebugClient = true
+local DebugClient = false
 local currentOrder = nil
 local truckBlip = nil
 local trailerBlip = nil

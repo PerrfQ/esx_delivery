@@ -1,5 +1,5 @@
 ESX = exports['es_extended']:getSharedObject()
-local DebugServer = true
+local DebugServer = false
 local activeVehicles = {} -- { [source] = { truck = netId, trailer = netId, depositPaid = timestamp, plate = string } }
 
 local function DebugPrint(...)
@@ -186,7 +186,7 @@ AddEventHandler('esx_delivery:abandonOrder', function(orderId)
         DebugPrint(string.format("[esx_delivery] Błąd SQL przy porzucaniu zlecenia ID %d dla gracza %d", orderId, source))
         return
     end
-    xPlayer.showNotification("Zlecenie zostało porzucone")
+    xPlayer.showNotification(TranslateCap('order_abandoned'))
     DebugPrint(string.format("[esx_delivery] Gracz %d porzucił zlecenie ID %d", source, orderId))
 end)
 

@@ -11,6 +11,7 @@ Locales['pl'] = {
     select_warehouse = "Wybierz hurtownię",
     loss = 'Straciłeś $%s na tym zleceniu!',
     company_name = "Walker Logistics",
+    order_abandoned = "Zlecenie zostało porzucone",
     return_vehicle = "Oddaj auto",
     warehouse_category = "Hurtownia",
     manage_orders = "Zarządzanie zleceniami",

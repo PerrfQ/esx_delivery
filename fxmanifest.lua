@@ -12,6 +12,11 @@ shared_scripts {
     'config.lua'
 }
 
+escrow_ignore {
+	'config.lua',
+	'locales/*lua'
+}
+
 client_scripts {
     'client/main.lua'
 }
@@ -24,3 +29,5 @@ dependencies {
     'es_extended',
     'esx_economyreworked'
 }
+
+lua54 'yes'
