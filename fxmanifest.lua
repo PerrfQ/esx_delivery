@@ -2,7 +2,7 @@ fx_version 'cerulean'
 game 'gta5'
 
 author 'PerfQ'
-description 'Tablet interface for esx_economyreworked'
+description 'Delivery system for esx_economyreworked'
 version '1.0.0'
 
 shared_scripts {
@@ -12,22 +12,17 @@ shared_scripts {
     'config.lua'
 }
 
+server_scripts {
+    'server/main.lua'
+}
+
 escrow_ignore {
     'config.lua',
     'locales/*.lua'
 }
 
 client_scripts {
-    'client.lua'
-}
-
-ui_page 'nui/index.html'
-
-files {
-    'nui/index.html',
-    'nui/index.js',
-    'nui/style.css',
-    'nui/img/*.svg'
+    'client/main.lua'
 }
 
 dependencies {
